@@ -40,7 +40,8 @@ pub mod burn2play {
         burn_perbill: u32,
         closes: BlockNumber,
         claim_fee: u128,
-        entries: Mapping<u128, H160>,
+        ticket_to_address: Mapping<u128, H160>,
+        address_to_ticket: Mapping<H160, u128>,
         tickets_sold: u128,
     }
 
@@ -89,26 +90,23 @@ pub mod burn2play {
             burn_perbill: u32,
             duration: BlockNumber,
             claim_fee: u128,
-        ) -> Self {
+        ) -> Result<Self, Vec<u8>> {
             let transferred = Self::env().transferred_value().as_u128();
 
-            if transferred < claim_fee {
-                return_value(
-                    ink::env::ReturnFlags::REVERT,
-                    &("Claim fee must be lower than the transferred value").as_bytes(),
-                );
-            }
+            assert!(
+                transferred < transferred,
+                "Claim fee must be lower than the transferred value"
+            );
 
-            Self::env().block_number();
-
-            Self {
+            Ok(Self {
                 ticket_price,
                 burn_perbill,
                 closes: Self::env().block_number().saturating_add(duration),
                 claim_fee,
-                entries: Mapping::new(),
+                ticket_to_address: Mapping::new(),
+                address_to_ticket: Mapping::new(),
                 tickets_sold: 0,
-            }
+            })
         }
 
         fn burn(amount: u128) {
@@ -120,12 +118,7 @@ pub mod burn2play {
 
         #[ink(message, payable)]
         pub fn burn_and_play(&mut self) {
-            if self.closes >= self.env().block_number() {
-                return_value(
-                    ink::env::ReturnFlags::REVERT,
-                    &("Raffle finished").as_bytes(),
-                );
-            }
+            assert!(self.closes < self.env().block_number(), "Raffle finished");
 
             let caller = self.env().caller();
             let value = self.env().transferred_value().as_u128();
@@ -135,8 +128,13 @@ pub mod burn2play {
 
             let tickets = value / self.ticket_price;
             for i in 0..tickets {
-                self.entries.insert(self.tickets_sold + i, &caller);
+                self.ticket_to_address
+                    .insert(self.tickets_sold + i, &caller);
             }
+
+            let current_tickets = self.address_to_ticket.get(caller).unwrap_or(0);
+            self.address_to_ticket
+                .insert(caller, &(current_tickets + tickets));
 
             Self::env().emit_event(ParticipantEntered {
                 address: caller,
@@ -147,12 +145,10 @@ pub mod burn2play {
 
         #[ink(message)]
         pub fn close(&mut self) {
-            if self.closes < self.env().block_number() {
-                return_value(
-                    ink::env::ReturnFlags::REVERT,
-                    &("Raffle not closed yet").as_bytes(),
-                );
-            }
+            assert!(
+                self.closes > self.env().block_number(),
+                "Raffle not finished yet"
+            );
 
             let caller = self.env().caller();
 
@@ -164,7 +160,7 @@ pub mod burn2play {
 
                 // Terminate contract awarding the winner
                 let winner_idx = self.get_pseudo_random() % self.tickets_sold;
-                let winner = self.entries.get(winner_idx).unwrap();
+                let winner = self.ticket_to_address.get(winner_idx).unwrap();
 
                 Self::env().emit_event(RaffleClosed {
                     address: winner,
