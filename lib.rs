@@ -2,13 +2,11 @@
 
 #[ink::contract]
 pub mod burn2play {
-    use super::*;
     use ink::abi::Sol;
     use ink::contract_ref;
     use ink::env::hash;
     use ink::env::return_value;
     use ink::env::DefaultEnvironment;
-    use ink::env::FromLittleEndian;
     use ink::prelude::vec::Vec;
     use ink::storage::Mapping;
     use ink::H160;
@@ -36,9 +34,6 @@ pub mod burn2play {
         Address::from(address)
     }
 
-    /// Defines the storage of your contract.
-    /// Add new fields to the below struct in order
-    /// to add new static storage fields to your contract.
     #[ink(storage)]
     pub struct Burn2play {
         ticket_price: u128,
@@ -49,11 +44,18 @@ pub mod burn2play {
         tickets_sold: u128,
     }
 
-    // #[ink(event)]
-    // pub struct Awarded {
-    //     winning_threshold: U256,
-    //     lucky_number: U256,
-    // }
+    #[ink(event)]
+    pub struct ParticipantEntered {
+        address: H160,
+        tickets: (u128, u128),
+    }
+
+    #[ink(event)]
+    pub struct RaffleClosed {
+        ticket: u128,
+        amount: u128,
+        address: H160,
+    }
 
     fn get_amount_to_burn(burn_perbill: u32, value: u128) -> u128 {
         value * u128::from(burn_perbill) / 1_000_000_000
@@ -85,7 +87,7 @@ pub mod burn2play {
         pub fn new(
             ticket_price: u128,
             burn_perbill: u32,
-            closes: BlockNumber,
+            duration: BlockNumber,
             claim_fee: u128,
         ) -> Self {
             let transferred = Self::env().transferred_value().as_u128();
@@ -102,7 +104,7 @@ pub mod burn2play {
             Self {
                 ticket_price,
                 burn_perbill,
-                closes,
+                closes: Self::env().block_number().saturating_add(duration),
                 claim_fee,
                 entries: Mapping::new(),
                 tickets_sold: 0,
@@ -111,7 +113,7 @@ pub mod burn2play {
 
         fn burn(amount: u128) {
             let precompile_address = fixed_address(11);
-            let mut precompile: contract_ref!(Burn, DefaultEnvironment, Sol) =
+            let precompile: contract_ref!(Burn, DefaultEnvironment, Sol) =
                 precompile_address.into();
             precompile.burn(amount, true);
         }
@@ -135,11 +137,16 @@ pub mod burn2play {
             for i in 0..tickets {
                 self.entries.insert(self.tickets_sold + i, &caller);
             }
+
+            Self::env().emit_event(ParticipantEntered {
+                address: caller,
+                tickets: (self.tickets_sold, self.tickets_sold + tickets - 1),
+            });
             self.tickets_sold += tickets;
         }
 
         #[ink(message)]
-        pub fn claim(&mut self) {
+        pub fn close(&mut self) {
             if self.closes < self.env().block_number() {
                 return_value(
                     ink::env::ReturnFlags::REVERT,
@@ -158,6 +165,12 @@ pub mod burn2play {
                 // Terminate contract awarding the winner
                 let winner_idx = self.get_pseudo_random() % self.tickets_sold;
                 let winner = self.entries.get(winner_idx).unwrap();
+
+                Self::env().emit_event(RaffleClosed {
+                    address: winner,
+                    amount: self.env().balance().as_u128(),
+                    ticket: winner_idx,
+                });
 
                 self.env().terminate_contract(winner);
             } else {
