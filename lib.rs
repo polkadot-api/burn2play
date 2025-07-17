@@ -58,6 +58,15 @@ pub mod burn2play {
         address: H160,
     }
 
+    #[ink(event)]
+    pub struct PlayCalled {}
+
+    #[ink(event)]
+    pub struct BeforeBurn {}
+
+    #[ink(event)]
+    pub struct AfterBurn {}
+
     fn get_amount_to_burn(burn_perbill: u32, value: u128) -> u128 {
         value * u128::from(burn_perbill) / 1_000_000_000
     }
@@ -91,10 +100,10 @@ pub mod burn2play {
             duration: BlockNumber,
             claim_fee: u128,
         ) -> Result<Self, Vec<u8>> {
-            let transferred = Self::env().transferred_value().as_u128();
+            let transferred = Self::u256_to_u128(Self::env().transferred_value());
 
             assert!(
-                transferred < transferred,
+                claim_fee < transferred,
                 "Claim fee must be lower than the transferred value"
             );
 
@@ -116,17 +125,35 @@ pub mod burn2play {
             precompile.burn(amount, true);
         }
 
+        fn u256_to_u128(value: U256) -> u128 {
+            // Dunno, empirically I found this
+            (value / 10000000).as_u128()
+        }
+
         #[ink(message, payable)]
         pub fn burn_and_play(&mut self) {
-            assert!(self.closes < self.env().block_number(), "Raffle finished");
+            Self::env().emit_event(PlayCalled {});
+
+            assert!(self.closes > self.env().block_number(), "Raffle finished");
 
             let caller = self.env().caller();
-            let value = self.env().transferred_value().as_u128();
+            let value = Self::u256_to_u128(self.env().transferred_value());
 
             let amount = get_amount_to_burn(self.burn_perbill, value);
+
+            Self::env().emit_event(BeforeBurn {});
             Self::burn(amount);
+            Self::env().emit_event(AfterBurn {});
 
             let tickets = value / self.ticket_price;
+            panic!(
+                "panic {} / {} -> {} / {} = {}",
+                self.env().transferred_value(),
+                self.env().balance(),
+                value,
+                self.ticket_price,
+                tickets
+            );
             for i in 0..tickets {
                 self.ticket_to_address
                     .insert(self.tickets_sold + i, &caller);
@@ -146,7 +173,7 @@ pub mod burn2play {
         #[ink(message)]
         pub fn close(&mut self) {
             assert!(
-                self.closes > self.env().block_number(),
+                self.closes <= self.env().block_number(),
                 "Raffle not finished yet"
             );
 
@@ -164,14 +191,14 @@ pub mod burn2play {
 
                 Self::env().emit_event(RaffleClosed {
                     address: winner,
-                    amount: self.env().balance().as_u128(),
+                    amount: Self::u256_to_u128(self.env().balance()),
                     ticket: winner_idx,
                 });
 
                 self.env().terminate_contract(winner);
             } else {
                 // Burn everything but the claim fee
-                Self::burn(self.env().balance().as_u128() - self.claim_fee);
+                Self::burn(Self::u256_to_u128(self.env().balance()) - self.claim_fee);
 
                 // Terminate contract awarding claimer
                 self.env().terminate_contract(caller);
