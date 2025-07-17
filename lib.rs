@@ -1,28 +1,50 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
-mod burn2play {
+pub mod burn2play {
+    use ink::abi::Sol;
+    use ink::contract_ref;
     use ink::env::hash;
     use ink::env::return_value;
+    use ink::env::DefaultEnvironment;
     use ink::env::FromLittleEndian;
     use ink::prelude::vec::Vec;
     use ink::storage::Mapping;
     use ink::H160;
     use ink::U256;
 
+    #[ink::trait_definition]
+    pub trait Burn {
+        #[ink(message)]
+        #[allow(non_snake_case)]
+        fn burn(&self, value: u128, keep_alive: bool) -> u32;
+    }
+
+    /// Calculates the address of a precompile at index `n` and with some additional prefix.
+    #[inline]
+    pub fn fixed_address(n: u16) -> Address {
+        let shifted = (n as u32) << 16;
+
+        let suffix = shifted.to_be_bytes();
+        let mut address = [0u8; 20];
+        let mut i = 16;
+        while i < address.len() {
+            address[i] = suffix[i - 16];
+            i = i + 1;
+        }
+        Address::from(address)
+    }
+
     /// Defines the storage of your contract.
     /// Add new fields to the below struct in order
     /// to add new static storage fields to your contract.
     #[ink(storage)]
     pub struct Burn2play {
-        burn_pct: u32,
-        claim_fee: u128,
-        // While we don't have a burn precompile, this is the best we can do
-        value: u128,
+        ticket_price: u128,
+        burn_perbill: u32,
         closes: BlockNumber,
-        // TODO PseudoRandom move to a separate contract for composability
-        salt: u64,
-        entries: Mapping<H160, u128>,
+        claim_fee: u128,
+        entries: Mapping<u32, H160>,
     }
 
     // #[ink(event)]
@@ -31,8 +53,8 @@ mod burn2play {
     //     lucky_number: U256,
     // }
 
-    fn get_amount_to_keep(burn_pct: u32, value: u128) -> u128 {
-        value - value * u128::from(burn_pct) / 1_000_000_000
+    fn get_amount_to_burn(burn_perbill: u32, value: u128) -> u128 {
+        value * u128::from(burn_perbill) / 1_000_000_000
     }
 
     impl Burn2play {
@@ -40,11 +62,9 @@ mod burn2play {
         #[ink(message)]
         pub fn get_pseudo_random(&mut self) -> u128 {
             let seed = self.env().block_timestamp();
-            let mut input: Vec<u8> = Vec::from(&seed.to_be_bytes());
-            input.extend_from_slice(&self.salt.to_be_bytes());
+            let input: Vec<u8> = Vec::from(&seed.to_be_bytes());
             let mut output = <hash::Keccak256 as hash::HashOutput>::Type::default();
             ink::env::hash_bytes::<hash::Keccak256>(&input, &mut output);
-            self.salt += 1;
 
             let mut result: u128 = 0;
             let mut tmp = [0u8; size_of::<u128>()];
@@ -61,37 +81,27 @@ mod burn2play {
         /// Constructor that initializes the `bool` value to the given `init_value`.
         #[ink(constructor, payable)]
         pub fn new(
-            initial_burn: u128,
-            claim_fee: u128,
-            closes: BlockNumber,
             ticket_price: u128,
-            // In PERBILL
-            burn_pct: u32,
+            burn_perbill: u32,
+            closes: BlockNumber,
+            claim_fee: u128,
         ) -> Self {
             let transferred = Self::env().transferred_value().as_u128();
-            if transferred < initial_burn {
-                return_value(
-                    ink::env::ReturnFlags::REVERT,
-                    &("Can't burn more than transferred value").as_bytes(),
-                );
-            }
 
-            let value = transferred.saturating_sub(initial_burn);
-            if value < claim_fee {
+            if transferred < claim_fee {
                 return_value(
                     ink::env::ReturnFlags::REVERT,
-                    &("Claim fee must be lower than the non-burned value").as_bytes(),
+                    &("Claim fee must be lower than the transferred value").as_bytes(),
                 );
             }
 
             Self::env().block_number();
 
             Self {
-                salt: 0,
-                value,
-                claim_fee,
+                ticket_price,
+                burn_perbill,
                 closes,
-                burn_pct,
+                claim_fee,
                 entries: Mapping::new(),
             }
         }
@@ -101,13 +111,17 @@ mod burn2play {
             let caller = self.env().caller();
             let value = self.env().transferred_value().as_u128();
 
-            let current_participation = self.entries.get(caller).unwrap_or(0);
-            self.entries
-                .insert(caller, &current_participation.saturating_add(value));
+            let amount = get_amount_to_burn(self.burn_perbill, value);
 
-            self.value = self
-                .value
-                .saturating_add(get_amount_to_keep(self.burn_pct, value))
+            let precompile_address = fixed_address(11);
+            let mut precompile: contract_ref!(Burn, DefaultEnvironment, Sol) =
+                precompile_address.into();
+            precompile.burn(amount, true);
+
+            // let tickets = value / self.ticket_price;
+            // for i in 0..tickets {
+            //     self.entries.insert(key, value)
+            // }
         }
 
         #[ink(message)]
