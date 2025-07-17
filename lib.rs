@@ -2,6 +2,7 @@
 
 #[ink::contract]
 pub mod burn2play {
+    use super::*;
     use ink::abi::Sol;
     use ink::contract_ref;
     use ink::env::hash;
@@ -17,7 +18,7 @@ pub mod burn2play {
     pub trait Burn {
         #[ink(message)]
         #[allow(non_snake_case)]
-        fn burn(&self, value: u128, keep_alive: bool) -> u32;
+        fn burn(&self, value: u128, keep_alive: bool);
     }
 
     /// Calculates the address of a precompile at index `n` and with some additional prefix.
@@ -44,7 +45,8 @@ pub mod burn2play {
         burn_perbill: u32,
         closes: BlockNumber,
         claim_fee: u128,
-        entries: Mapping<u32, H160>,
+        entries: Mapping<u128, H160>,
+        tickets_sold: u128,
     }
 
     // #[ink(event)]
@@ -103,25 +105,37 @@ pub mod burn2play {
                 closes,
                 claim_fee,
                 entries: Mapping::new(),
+                tickets_sold: 0,
             }
         }
 
-        #[ink(message, payable)]
-        pub fn burn_and_play(&mut self) {
-            let caller = self.env().caller();
-            let value = self.env().transferred_value().as_u128();
-
-            let amount = get_amount_to_burn(self.burn_perbill, value);
-
+        fn burn(amount: u128) {
             let precompile_address = fixed_address(11);
             let mut precompile: contract_ref!(Burn, DefaultEnvironment, Sol) =
                 precompile_address.into();
             precompile.burn(amount, true);
+        }
 
-            // let tickets = value / self.ticket_price;
-            // for i in 0..tickets {
-            //     self.entries.insert(key, value)
-            // }
+        #[ink(message, payable)]
+        pub fn burn_and_play(&mut self) {
+            if self.closes >= self.env().block_number() {
+                return_value(
+                    ink::env::ReturnFlags::REVERT,
+                    &("Raffle finished").as_bytes(),
+                );
+            }
+
+            let caller = self.env().caller();
+            let value = self.env().transferred_value().as_u128();
+
+            let amount = get_amount_to_burn(self.burn_perbill, value);
+            Self::burn(amount);
+
+            let tickets = value / self.ticket_price;
+            for i in 0..tickets {
+                self.entries.insert(self.tickets_sold + i, &caller);
+            }
+            self.tickets_sold += tickets;
         }
 
         #[ink(message)]
@@ -133,105 +147,26 @@ pub mod burn2play {
                 );
             }
 
-            let rnd = self.get_pseudo_random();
+            let caller = self.env().caller();
 
-            // self.entries.it
-        }
-    }
+            if self.tickets_sold > 0 {
+                // Transfer claim fee
+                self.env()
+                    .transfer(caller, U256::from(self.claim_fee))
+                    .unwrap();
 
-    /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
-    /// module and test functions are marked with a `#[test]` attribute.
-    /// The below code is technically just normal Rust code.
-    #[cfg(test)]
-    mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
+                // Terminate contract awarding the winner
+                let winner_idx = self.get_pseudo_random() % self.tickets_sold;
+                let winner = self.entries.get(winner_idx).unwrap();
 
-        /// We test if the default constructor does its job.
-        #[ink::test]
-        fn default_works() {
-            // let burn2play = Burn2play::default();
-            // assert_eq!(burn2play.get(), false);
-        }
+                self.env().terminate_contract(winner);
+            } else {
+                // Burn everything but the claim fee
+                Self::burn(self.env().balance().as_u128() - self.claim_fee);
 
-        /// We test a simple use case of our contract.
-        #[ink::test]
-        fn it_works() {
-            // let mut burn2play = Burn2play::new();
-
-            // burn2play.play_2_burn()
-        }
-    }
-
-    /// This is how you'd write end-to-end (E2E) or integration tests for ink! contracts.
-    ///
-    /// When running these you need to make sure that you:
-    /// - Compile the tests with the `e2e-tests` feature flag enabled (`--features e2e-tests`)
-    /// - Are running a Substrate node which contains `pallet-contracts` in the background
-    #[cfg(all(test, feature = "e2e-tests"))]
-    mod e2e_tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
-
-        /// A helper function used for calling contract messages.
-        use ink_e2e::ContractsBackend;
-
-        /// The End-to-End test `Result` type.
-        type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-        // /// We test that we can upload and instantiate the contract using its default constructor.
-        // #[ink_e2e::test]
-        // async fn default_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-        //     // Given
-        //     let mut constructor = Burn2playRef::default();
-
-        //     // When
-        //     let contract = client
-        //         .instantiate("burn2play", &ink_e2e::alice(), &mut constructor)
-        //         .submit()
-        //         .await
-        //         .expect("instantiate failed");
-        //     let call_builder = contract.call_builder::<Burn2play>();
-
-        //     // Then
-        //     let get = call_builder.get();
-        //     let get_result = client.call(&ink_e2e::alice(), &get).dry_run().await?;
-        //     assert!(matches!(get_result.return_value(), false));
-
-        //     Ok(())
-        // }
-
-        /// We test that we can read and write a value from the on-chain contract.
-        #[ink_e2e::test]
-        async fn it_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            // let mut constructor = Burn2playRef::new();
-            // let contract = client
-            //     .instantiate("burn2play", &ink_e2e::bob(), &mut constructor)
-            //     .submit()
-            //     .await
-            //     .expect("instantiate failed");
-            // let mut call_builder = contract.call_builder::<Burn2play>();
-
-            // let get = call_builder.play_2_burn();
-            // let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            // let result = U256::zero();
-            // assert!(matches!(get_result.return_value(), result));
-
-            // // When
-            // let flip = call_builder.flip();
-            // let _flip_result = client
-            //     .call(&ink_e2e::bob(), &flip)
-            //     .submit()
-            //     .await
-            //     .expect("flip failed");
-
-            // // Then
-            // let get = call_builder.get();
-            // let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            // assert!(matches!(get_result.return_value(), true));
-
-            Ok(())
+                // Terminate contract awarding claimer
+                self.env().terminate_contract(caller);
+            }
         }
     }
 }
