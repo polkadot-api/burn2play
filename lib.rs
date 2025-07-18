@@ -5,7 +5,6 @@ pub mod burn2play {
     use ink::abi::Sol;
     use ink::contract_ref;
     use ink::env::hash;
-    use ink::env::return_value;
     use ink::env::DefaultEnvironment;
     use ink::prelude::vec::Vec;
     use ink::storage::Mapping;
@@ -127,7 +126,7 @@ pub mod burn2play {
 
         fn u256_to_u128(value: U256) -> u128 {
             // Dunno, empirically I found this
-            (value / 100_000_000).as_u128()
+            (value / U256::from(100_000_000)).as_u128()
         }
 
         #[ink(message, payable)]
@@ -146,20 +145,22 @@ pub mod burn2play {
             Self::env().emit_event(AfterBurn {});
 
             let tickets = value / self.ticket_price;
-            for i in 0..tickets {
-                self.ticket_to_address
-                    .insert(self.tickets_sold + i, &caller);
+            if tickets > 0 {
+                for i in 0..tickets {
+                    self.ticket_to_address
+                        .insert(self.tickets_sold + i, &caller);
+                }
+
+                let current_tickets = self.address_to_ticket.get(caller).unwrap_or(0);
+                self.address_to_ticket
+                    .insert(caller, &(current_tickets + tickets));
+
+                Self::env().emit_event(ParticipantEntered {
+                    address: caller,
+                    tickets: (self.tickets_sold, self.tickets_sold + tickets - 1),
+                });
+                self.tickets_sold += tickets;
             }
-
-            let current_tickets = self.address_to_ticket.get(caller).unwrap_or(0);
-            self.address_to_ticket
-                .insert(caller, &(current_tickets + tickets));
-
-            Self::env().emit_event(ParticipantEntered {
-                address: caller,
-                tickets: (self.tickets_sold, self.tickets_sold + tickets - 1),
-            });
-            self.tickets_sold += tickets;
         }
 
         #[ink(message)]
