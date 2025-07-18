@@ -127,7 +127,7 @@ pub mod burn2play {
 
         fn u256_to_u128(value: U256) -> u128 {
             // Dunno, empirically I found this
-            (value / 10000000).as_u128()
+            (value / 100_000_000).as_u128()
         }
 
         #[ink(message, payable)]
@@ -146,14 +146,6 @@ pub mod burn2play {
             Self::env().emit_event(AfterBurn {});
 
             let tickets = value / self.ticket_price;
-            panic!(
-                "panic {} / {} -> {} / {} = {}",
-                self.env().transferred_value(),
-                self.env().balance(),
-                value,
-                self.ticket_price,
-                tickets
-            );
             for i in 0..tickets {
                 self.ticket_to_address
                     .insert(self.tickets_sold + i, &caller);
